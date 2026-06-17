@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Unidad Contra el Presidente Anarco Capitalista</title>
+    <style>
+        :root { --bg: #f5f0e1; --text: #333; --accent: #c04000; --danger: #c00020; --safe: #207040; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Segoe UI', sans-serif;
+            overflow: hidden;
+            user-select: none;
+        }
+        #game-container {
+            position: relative;
+            width: 95vw;
+            max-width: 1000px;
+            aspect-ratio: 16/10;
+            max-height: 90vh;
+            border: 2px solid #aa8c7a;
+            border-radius: 12px;
+            overflow: hidden;
+            background: var(--bg);
+        }
+        canvas { display: block; width: 100%; height: 100%; }
+        #ui-overlay {
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+            pointer-events: none; display: flex; flex-direction: column;
+            justify-content: space-between; padding: 12px 16px;
+        }
+        #hud { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+        .hud-panel {
+            background: rgba(255,255,240,0.9); border: 1px solid #aa8c7a;
+            border-radius: 8px; padding: 8px 14px; color: var(--text);
+            font-size: 13px; backdrop-filter: blur(4px); pointer-events: auto;
+        }
+        .hud-panel span { font-weight: bold; color: var(--accent); }
+        .hud-panel.danger span { color: var(--danger); }
+        .hud-panel.safe span { color: var(--safe); }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="ui-overlay">
+            <div id="hud">
+                <div class="hud-panel">👥 <span id="hud-citizens">0</span></div>
+                <div class="hud-panel">📋 <span id="hud-level-title">Nivel 1</span></div>
+                <div class="hud-panel danger">🚔 <span id="hud-police">0</span></div>
+                <div class="hud-panel safe">🛡️ <span id="hud-shelter">—</span></div>
+                <div class="hud-panel">🎯 Necesarios: <span id="hud-required">6</span></div>
+                <div class="hud-panel">💪 Fuerza: <span id="hud-strength">0</span></div>
+                <div class="hud-panel">🏆 <span id="hud-score">0</span></div>
+            </div>
+        </div>
+    </div>
+    <script>
+        (function() {
+            // ==================== JUEGO COMPLETO ====================
+            const canvas = document.getElementById('gameCanvas');
+            const ctx = canvas.getContext('2d');
+            const container = document.getElementById('game-container');
+
+            const hudCitizens = document.getElementById('hud-citizens');
+            const hudLevelTitle = document.getElementById('hud-level-title');
+            const hudPolice = document.getElementById('hud-police');
+            const hudShelter = document.getElementById('hud-shelter');
+            const hudRequired = document.getElementById('hud-required');
+            const hudStrength = document.getElementById('hud-strength');
+            const hudScore = document.getElementById('hud-score');
+
+            // =============== CONFIGURACIÓN ===============
+            const MAX_REGULAR_LEVELS = 5;
+            const BOSS_LEVEL_NUM = MAX_REGULAR_LEVELS + 1;
+
+            const LEVEL_TITLES = {
+                1: "Organicemos a los jubilados",
+                2: "Organicemos a los discapacitados",
+                3: "Unamos a los científicos",
+                4: "Unamos a las feministas y diversidades",
+                5: "Despertemos a los estudiantes universitarios",
+            };
+            LEVEL_TITLES[BOSS_LEVEL_NUM] = "Agrupémonos todos en la lucha final";
+
+            // Focos de resistencia permanentes por nivel
+            const RESISTANCE_FOCUS = {
+                1: { name: "Marcha de los Miércoles", message: "En la calle, gente sin esperanza y sin paciencia, cientos de jubilados se convocan cada miércoles para reclamar por una jubilación digna." },
+                2: { name: "Congreso", message: "El Congreso ratifica leyes que se oponen a las políticas del gobierno y defiende a estos sectores." },
+                3: { name: "INTI", message: "Los trabajadores de ciencia y tecnología derrotan en las calles y en el Congreso los distintos intentos para desarmar al organismo." },
+                4: { name: "8M", message: "En las calles movilizadas, las mujeres y diversidades le plantan cara y hacen retroceder las políticas machistas de este gobierno." },
+                5: { name: "Universidad Pública", message: "Estudiantes y docentes defienden la educación pública y gratuita frente al ajuste y la precarización." },
+                [BOSS_LEVEL_NUM]: { name: "Hospital Garrahan", message: "Los trabajadores y la comunidad se atrincheran en el hospital evitando su desguace." }
+            };
+
+            function getLevelConfig(lvl) {
+                const c = {
+                    1: { citizens:15, police:2, policeSpeed:1.2, citizenSpeed:1.0, timeLimit:55, required:6, type:'jubilado' },
+                    2: { citizens:20, police:3, policeSpeed:1.6, citizenSpeed:1.3, timeLimit:48, required:8, type:'discapacitado' },
+                    3: { citizens:25, police:4, policeSpeed:2.0, citizenSpeed:1.5, timeLimit:42, required:10, type:'cientifico' },
+                    4: { citizens:25, police:4, policeSpeed:2.1, citizenSpeed:1.5, timeLimit:42, required:10, type:'feminista' },
+                    5: { citizens:28, police:5, policeSpeed:2.3, citizenSpeed:1.6, timeLimit:40, required:12, type:'universitario' },
+                };
+                return c[lvl] || c[5];
+            }
+
+            // =============== AUDIO ===============
+            let audioCtx = null;
+            function initAudio() {
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+            }
+            function playBeep(f, d, t='square', v=0.08) {
+                if (!audioCtx) return;
+                try {
+                    const o = audioCtx.createOscillator();
+                    const g = audioCtx.createGain();
+                    o.type = t; o.frequency.setValueAtTime(f, audioCtx.currentTime);
+                    g.gain.setValueAtTime(v, audioCtx.currentTime);
+                    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + d);
+                    o.connect(g); g.connect(audioCtx.destination);
+                    o.start(); o.stop(audioCtx.currentTime + d);
+                } catch(e) {}
+            }
+            function sfxCollect() { playBeep(600,0.1,'sine',0.07); playBeep(900,0.08,'sine',0.05); }
+            function sfxBattle() { playBeep(80,0.3,'square',0.1); }
+            function sfxVictory() { playBeep(523,0.15); setTimeout(()=>playBeep(659,0.15),150); setTimeout(()=>playBeep(784,0.25),300); }
+            function sfxFlagSpawn() { playBeep(800,0.1,'sine',0.08); playBeep(1000,0.15,'sine',0.09); }
+            function sfxMobilization() { playBeep(200,0.5,'square',0.12); playBeep(300,0.6,'triangle',0.1); }
+
+            // =============== ESTADOS ===============
+            const STATE = {
+                MENU:'menu', TUTORIAL:'tutorial', PLAYING:'playing',
+                BOSS_INTRO:'boss_intro', BOSS_BATTLE:'boss_battle',
+                LEVEL_COMPLETE:'level_complete', GAME_OVER:'game_over', VICTORY:'victory'
+            };
+            let gameState = STATE.MENU;
+            let currentLevel = 1;
+            let score = 0;
+            let lives = 3;
+            let levelTimer = 0, levelTimeLimit = 55;
+            let player;
+            let citizens = [], policeUnits = [], safeZones = [], particles = [];
+            let resistanceFocus = null; // Foco principal del nivel
+            let boss = null;
+            let flag = null;
+            const bossFlagRequired = 18;
+            let mobilization = { active: false, timer: 0, outcomeState: null };
+            let floatingMessages = [];
+            let bossIntroTimer = 0;
+            const keys = {};
+            let mobileDir = { x:0, y:0 };
+
+            let W, H;
+            function resizeCanvas() {
+                const rect = container.getBoundingClientRect();
+                W = Math.floor(rect.width * Math.min(window.devicePixelRatio || 1, 2));
+                H = Math.floor(rect.height * Math.min(window.devicePixelRatio || 1, 2));
+                if (canvas.width !== W || canvas.height !== H) {
+                    canvas.width = W; canvas.height = H;
+                }
+            }
+
+            // =============== CLASES ===============
+            class Player {
+                constructor(x, y) {
+                    this.x = x; this.y = y; this.radius = 12;
+                    this.speed = 3.5; this.collected = []; this.trail = [];
+                    this.invuln = 0; this.speedBoost = 0; this.shield = false; this.shieldTimer = 0;
+                }
+                update(dt) {
+                    let dx = 0, dy = 0;
+                    if (keys['w']||keys['arrowup']) dy=-1;
+                    if (keys['s']||keys['arrowdown']) dy=1;
+                    if (keys['a']||keys['arrowleft']) dx=-1;
+                    if (keys['d']||keys['arrowright']) dx=1;
+                    dx += mobileDir.x; dy += mobileDir.y;
+                    const mag = Math.sqrt(dx*dx+dy*dy);
+                    if (mag > 1) { dx /= mag; dy /= mag; }
+                    const spd = this.speed + this.speedBoost;
+                    this.x += dx * spd * dt * 60;
+                    this.y += dy * spd * dt * 60;
+                    this.x = Math.max(this.radius, Math.min(W-this.radius, this.x));
+                    this.y = Math.max(this.radius, Math.min(H-this.radius, this.y));
+                    this.trail.push({x:this.x, y:this.y});
+                    if (this.trail.length > 30) this.trail.shift();
+                    if (this.invuln > 0) this.invuln -= dt;
+                    if (this.speedBoost > 0) this.speedBoost = Math.max(0, this.speedBoost - dt*0.8);
+                    if (this.shieldTimer > 0) { this.shieldTimer -= dt; if (this.shieldTimer<=0) this.shield=false; }
+                    for (let i=0; i<this.collected.length; i++) {
+                        const c = this.collected[i];
+                        const idx = Math.min(i+3, this.trail.length-1);
+                        const t = this.trail[this.trail.length-1-idx] || {x:this.x, y:this.y};
+                        const angle = i*1.2 + Date.now()*0.002;
+                        const dist = 14 + (i%5)*7;
+                        c.x += (t.x + Math.cos(angle)*dist - c.x) * 0.15;
+                        c.y += (t.y + Math.sin(angle)*dist - c.y) * 0.15;
+                    }
+                }
+                draw(ctx) {
+                    if (this.shield) {
+                        ctx.beginPath(); ctx.arc(this.x,this.y,this.radius+6,0,Math.PI*2);
+                        ctx.fillStyle='rgba(100,200,255,0.3)'; ctx.fill();
+                    }
+                    if (this.invuln>0 && Math.floor(this.invuln*20)%2===0) ctx.globalAlpha=0.5;
+                    ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI*2);
+                    ctx.fillStyle = '#d02020'; ctx.fill();
+                    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+                    ctx.fillStyle = '#f0c040';
+                    ctx.beginPath();
+                    ctx.moveTo(this.x - 6, this.y - 5);
+                    ctx.lineTo(this.x + 4, this.y);
+                    ctx.lineTo(this.x - 6, this.y + 5);
+                    ctx.closePath(); ctx.fill();
+                    ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.stroke();
+                    ctx.fillStyle = '#333';
+                    ctx.fillRect(this.x - 10, this.y - 1.5, 5, 3);
+                    ctx.globalAlpha = 1;
+                    if (this.collected.length>=6) {
+                        ctx.beginPath(); ctx.arc(this.x,this.y,this.radius+4,0,Math.PI*2);
+                        ctx.strokeStyle='#ffd700'; ctx.lineWidth=2; ctx.setLineDash([2,2]); ctx.stroke(); ctx.setLineDash([]);
+                    }
+                }
+                getStrength() { return this.collected.length; }
+                addCitizen(c) {
+                    if (this.collected.length < 35) {
+                        c.free = false; c.collected = true; this.collected.push(c); sfxCollect();
+                        if (this.collected.length === 8) this.speedBoost = 2.5;
+                        if (this.collected.length === 15) { this.shield = true; this.shieldTimer = 8; }
+                    }
+                }
+                loseCitizens(n) {
+                    const lost = [];
+                    for (let i=0; i<n && this.collected.length>0; i++) {
+                        const c = this.collected.pop();
+                        c.free = true; c.collected = false;
+                        c.x = this.x + (Math.random()-0.5)*80;
+                        c.y = this.y + (Math.random()-0.5)*80;
+                        c.scatter = 1.5;
+                        lost.push(c);
+                        citizens.push(c);
+                    }
+                    this.invuln = 1.0;
+                    return lost;
+                }
+            }
+
+            class Citizen {
+                constructor(x, y, type) {
+                    this.x = x; this.y = y; this.radius = 12;
+                    this.free = true; this.collected = false;
+                    this.wanderAngle = Math.random()*Math.PI*2;
+                    this.wanderTimer = Math.random()*3;
+                    this.speed = 0.6; this.scatter = 0;
+                    this.type = type;
+                    this.emoji = this.getEmoji();
+                }
+                getEmoji() {
+                    if (this.type === 'jubilado') return ['👴🏽','👵🏽','🧓🏼'][Math.floor(Math.random()*3)];
+                    if (this.type === 'discapacitado') return ['🧑🏽‍🦽','👩🏻‍🦽','👨‍🦽','🧑‍🦯'][Math.floor(Math.random()*4)];
+                    if (this.type === 'cientifico') return ['🧑🏽‍⚕️','👩🏽‍⚕️','👨🏻‍🔬'][Math.floor(Math.random()*3)];
+                    if (this.type === 'feminista') return ['👩🏽‍🎤','👩🏻‍🎤','👩🏿‍🎤','👩🏽‍🦱'][Math.floor(Math.random()*4)];
+                    if (this.type === 'universitario') return ['👨🏽‍🎓','👩🏻‍🎓','🧑‍🎓','👩🏽‍🏫'][Math.floor(Math.random()*4)];
+                    return '👤';
+                }
+                update(dt, config) {
+                    if (this.collected) return;
+                    if (this.scatter>0) { this.scatter-=dt; this.x+=(Math.random()-0.5)*4; this.y+=(Math.random()-0.5)*4; return; }
+                    this.speed = config.citizenSpeed;
+                    this.wanderTimer -= dt;
+                    if (this.wanderTimer<=0) { this.wanderAngle+=(Math.random()-0.5)*1.5; this.wanderTimer=1.5+Math.random()*3; }
+                    this.x += Math.cos(this.wanderAngle)*this.speed*dt*60;
+                    this.y += Math.sin(this.wanderAngle)*this.speed*dt*60;
+                    this.x = Math.max(this.radius, Math.min(W-this.radius, this.x));
+                    this.y = Math.max(this.radius, Math.min(H-this.radius, this.y));
+                }
+                draw(ctx) {
+                    if (this.collected) return;
+                    ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI*2);
+                    ctx.fillStyle = '#ffffff'; ctx.fill();
+                    ctx.strokeStyle = '#000000'; ctx.lineWidth = 3; ctx.stroke();
+                    ctx.fillStyle = '#000';
+                    ctx.font = '16px "Segoe UI Emoji", "Apple Color Emoji", sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(this.emoji, this.x, this.y);
+                }
+                drawCollected(ctx, x, y) {
+                    ctx.save(); ctx.translate(x, y);
+                    ctx.beginPath(); ctx.arc(0, 0, this.radius, 0, Math.PI*2);
+                    ctx.fillStyle = '#e04040'; ctx.fill();
+                    ctx.strokeStyle = '#ff6666'; ctx.lineWidth = 2; ctx.stroke();
+                    ctx.fillStyle = '#000';
+                    ctx.font = '16px "Segoe UI Emoji", "Apple Color Emoji", sans-serif';
+                    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                    ctx.fillText(this.emoji, 0, 0);
+                    ctx.restore();
+                }
+            }
+
+            class PoliceUnit {
+                constructor(x, y, speed) {
+                    this.x = x; this.y = y; this.radius = 12;
+                    this.speed = speed; this.state = 'patrol'; this.stunTimer = 0;
+                    this.patrolAngle = Math.random()*Math.PI*2; this.patrolTimer = 0;
+                }
+                update(dt, playerRef, config) {
+                    if (this.stunTimer>0) { this.stunTimer-=dt; return; }
+                    this.speed = config.policeSpeed;
+                    let target = null, minDist = Infinity;
+                    if (playerRef && playerRef.getStrength()>0) {
+                        const d = Math.hypot(this.x-playerRef.x, this.y-playerRef.y);
+                        if (d<300) { target=playerRef; minDist=d; }
+                    }
+                    for (let c of citizens) {
+                        if (c.collected||c.scatter>0) continue;
+                        const d = Math.hypot(this.x-c.x, this.y-c.y);
+                        if (d<200 && d<minDist) { target=c; minDist=d; }
+                    }
+                    if (target && minDist<250) {
+                        this.state = 'chase';
+                        const angle = Math.atan2(target.y-this.y, target.x-this.x);
+                        this.x += Math.cos(angle)*this.speed*1.2*dt*60;
+                        this.y += Math.sin(angle)*this.speed*1.2*dt*60;
+                    } else {
+                        this.state = 'patrol';
+                        this.patrolTimer -= dt;
+                        if (this.patrolTimer<=0) { this.patrolAngle+=(Math.random()-0.5)*2; this.patrolTimer=2+Math.random()*3; }
+                        this.x += Math.cos(this.patrolAngle)*this.speed*0.5*dt*60;
+                        this.y += Math.sin(this.patrolAngle)*this.speed*0.5*dt*60;
+                    }
+                    this.x = Math.max(this.radius, Math.min(W-this.radius, this.x));
+                    this.y = Math.max(this.radius, Math.min(H-this.radius, this.y));
+                }
+                draw(ctx) {
+                    if (this.stunTimer>0 && Math.floor(this.stunTimer*15)%2===0) return;
+                    // Fondo celeste
+                    ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI*2);
+                    ctx.fillStyle = '#b3d9ff'; ctx.fill();
+                    ctx.strokeStyle = '#1a3a80'; ctx.lineWidth = 2; ctx.stroke();
+                    // Casco azul
+                    ctx.fillStyle = '#1a3a80';
+                    ctx.beginPath(); ctx.ellipse(this.x, this.y-2, 8, 6, 0, Math.PI, 0); ctx.fill();
+                    ctx.fillRect(this.x-8, this.y-6, 16, 6);
+                    ctx.fillStyle = '#111';
+                    ctx.fillRect(this.x-6, this.y-4, 12, 3);
+                }
+                stun(d) { this.stunTimer = d; this.state = 'stunned'; }
+            }
+
+            class SafeZone {
+                constructor(x, y, radius, permanent, name = '', message = '') {
+                    this.x = x; this.y = y; this.radius = radius;
+                    this.timer = permanent ? Infinity : 10; this.active = true;
+                    this.permanent = permanent;
+                    this.phase = Math.random()*Math.PI*2;
+                    this.name = name;
+                    this.message = message;
+                    this.messageShown = false; // si el mensaje está actualmente en pantalla
+                }
+                update(dt) {
+                    if (!this.permanent) { this.timer -= dt; if (this.timer <= 0) this.active = false; }
+                    this.phase += dt*2;
+                }
+                draw(ctx) {
+                    const alpha = this.active ? (0.5 + Math.sin(this.phase)*0.2) : 0;
+                    ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI*2);
+                    ctx.fillStyle = `rgba(80,220,160,${alpha*0.4})`; ctx.fill();
+                    ctx.strokeStyle = `rgba(100,255,180,${alpha})`; ctx.lineWidth = 2;
+                    ctx.setLineDash([6,4]); ctx.stroke(); ctx.setLineDash([]);
+                    if (this.name) {
+                        ctx.fillStyle = '#000'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center';
+                        ctx.fillText(this.name, this.x, this.y - this.radius - 5);
+                    }
+                }
+                contains(px, py, r=0) { return Math.hypot(px - this.x, py - this.y) < this.radius + r; }
+            }
+
+            class Flag {
+                constructor(x,y) { this.x=x; this.y=y; this.poleX=x; this.poleY=y-25; this.wave=0; this.active=true; }
+                update(dt) { this.wave+=dt*5; }
+                draw(ctx) {
+                    ctx.strokeStyle='#8B4513'; ctx.lineWidth=4;
+                    ctx.beginPath(); ctx.moveTo(this.poleX,this.poleY); ctx.lineTo(this.poleX,this.poleY+50); ctx.stroke();
+                    const off=Math.sin(this.wave)*3;
+                    ctx.fillStyle='#d02020';
+                    ctx.beginPath(); ctx.moveTo(this.poleX,this.poleY); ctx.lineTo(this.poleX+35+off,this.poleY+12);
+                    ctx.lineTo(this.poleX+32+off,this.poleY+24); ctx.lineTo(this.poleX,this.poleY+20); ctx.closePath(); ctx.fill();
+                    ctx.fillStyle='white'; ctx.font='bold 14px sans-serif'; ctx.textAlign='center';
+                    ctx.fillText('⚑',this.poleX+18,this.poleY+18); ctx.textAlign='start';
+                }
+            }
+
+            class Boss {
+                constructor(x,y) {
+                    this.x=x; this.y=y; this.radius=35; this.speed=1.8; this.hp=100; this.maxHp=100;
+                    this.phase=1; this.angle=0; this.reach=65; this.cooldown=0;
+                    this.charge=false; this.chargeTarget=null; this.stunTimer=0;
+                }
+                update(dt, playerRef) {
+                    if (this.stunTimer>0) { this.stunTimer-=dt; this.angle+=dt*8; return; }
+                    this.angle += dt*(12+this.phase*3);
+                    this.cooldown -= dt;
+                    if (this.hp<50 && this.phase===1) { this.phase=2; this.speed=2.5; }
+                    if (this.charge) {
+                        const ang = Math.atan2(this.chargeTarget.y-this.y, this.chargeTarget.x-this.x);
+                        this.x += Math.cos(ang)*5*dt*60;
+                        this.y += Math.sin(ang)*5*dt*60;
+                        if (Math.hypot(this.x-this.chargeTarget.x, this.y-this.chargeTarget.y)<30 || this.cooldown<-1) {
+                            this.charge=false; this.cooldown=1.5;
+                        }
+                    } else if (playerRef && this.cooldown<=0) {
+                        const d = Math.hypot(this.x-playerRef.x, this.y-playerRef.y);
+                        if (d<350) {
+                            this.chargeTarget = {x:playerRef.x, y:playerRef.y};
+                            this.charge = true;
+                            this.cooldown = 2.5 - this.phase*0.5;
+                        } else {
+                            const ang = Math.atan2(playerRef.y-this.y, playerRef.x-this.x);
+                            this.x += Math.cos(ang)*this.speed*dt*60;
+                            this.y += Math.sin(ang)*this.speed*dt*60;
+                        }
+                    }
+                    this.x = Math.max(this.radius, Math.min(W-this.radius, this.x));
+                    this.y = Math.max(this.radius, Math.min(H-this.radius, this.y));
+                }
+                draw(ctx) {
+                    // ========== REEMPLAZAR ICONO DEL BOSS ==========
+                    // Aquí se dibuja al presidente con motosierra.
+                    // Para usar una imagen (ej. "presidente.png"), reemplazá este bloque por:
+                    // const img = new Image(); img.src = 'presidente.png';
+                    // ctx.drawImage(img, this.x - this.radius, this.y - this.radius, this.radius*2, this.radius*2);
+                    // Pero como la imagen podría no estar cargada, usamos el dibujo vectorial por ahora.
+                    ctx.fillStyle = '#1a1a1a';
+                    ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI*2); ctx.fill();
+                    ctx.strokeStyle = '#ffd700'; ctx.lineWidth=4; ctx.stroke();
+                    const cx = this.x + Math.cos(this.angle)*(this.radius+15);
+                    const cy = this.y + Math.sin(this.angle)*(this.radius+15);
+                    ctx.fillStyle = '#ccc';
+                    ctx.fillRect(cx-15, cy-4, 30, 8);
+                    ctx.fillStyle = '#ff0000';
+                    for(let i=0;i<5;i++) ctx.fillRect(cx-10+i*5, cy-7, 3, 14);
+                    // Barra de vida
+                    ctx.fillStyle='#333';
+                    ctx.fillRect(this.x-30, this.y-this.radius-15, 60, 8);
+                    ctx.fillStyle='#ff0000';
+                    ctx.fillRect(this.x-30, this.y-this.radius-15, 60*(this.hp/this.maxHp), 8);
+                }
+                hit(dmg) { this.hp -= dmg; this.stunTimer=0.8; this.charge=false; if (this.hp<=0) this.hp=0; }
+            }
+
+            // =============== INICIALIZACIÓN ===============
+            function initLevel(lvl) {
+                const cfg = getLevelConfig(lvl);
+                citizens = []; policeUnits = []; safeZones = []; particles = []; flag = null; boss = null;
+                mobilization = { active:false, timer:0, outcomeState:null };
+                levelTimer = cfg.timeLimit; levelTimeLimit = cfg.timeLimit;
+                player = new Player(W*0.2, H*0.5);
+                for (let i=0; i<cfg.citizens; i++) {
+                    citizens.push(new Citizen(W*0.3+Math.random()*W*0.5, 30+Math.random()*(H-60), cfg.type));
+                }
+                for (let i=0; i<cfg.police; i++) {
+                    policeUnits.push(new PoliceUnit(W*0.6+Math.random()*W*0.3, 40+Math.random()*(H-80), cfg.policeSpeed));
+                }
+                // Único foco de resistencia permanente
+                const focusData = RESISTANCE_FOCUS[lvl];
+                resistanceFocus = new SafeZone(W*0.25, H*0.5, 50, true, focusData.name, focusData.message);
+                currentLevel = lvl;
+                gameState = STATE.PLAYING;
+            }
+            function initBossLevel() {
+                const cfg = { citizens:22, police:3, policeSpeed:1.6, citizenSpeed:1.4, timeLimit:75, required:15, type:'mixto' };
+                citizens = []; policeUnits = []; safeZones = []; particles = []; flag = null;
+                mobilization = { active:false, timer:0, outcomeState:null };
+                boss = new Boss(W*0.75, H*0.5);
+                levelTimer = cfg.timeLimit; levelTimeLimit = cfg.timeLimit;
+                player = new Player(W*0.2, H*0.5);
+                const allTypes = ['jubilado','discapacitado','cientifico','feminista','universitario'];
+                for (let i=0; i<cfg.citizens; i++) {
+                    citizens.push(new Citizen(W*0.2+Math.random()*W*0.5, 30+Math.random()*(H-60), allTypes[Math.floor(Math.random()*allTypes.length)]));
+                }
+                for (let i=0; i<cfg.police; i++) policeUnits.push(new PoliceUnit(W*0.7+i*60, H*0.4+i*60, cfg.policeSpeed));
+                // Foco principal del jefe
+                const bossFocus = RESISTANCE_FOCUS[BOSS_LEVEL_NUM];
+                resistanceFocus = new SafeZone(W*0.25, H*0.5, 50, true, bossFocus.name, bossFocus.message);
+                // Focos de resistencia anteriores (más pequeños)
+                const prevLevels = [1,2,3,4,5];
+                const positions = [
+                    {x:W*0.7, y:H*0.25}, {x:W*0.7, y:H*0.55}, {x:W*0.7, y:H*0.85},
+                    {x:W*0.45, y:H*0.85}, {x:W*0.15, y:H*0.85}
+                ];
+                prevLevels.forEach((lvl, i) => {
+                    const fd = RESISTANCE_FOCUS[lvl];
+                    if (fd) {
+                        const pos = positions[i] || {x:W*0.5, y:H*0.5};
+                        safeZones.push(new SafeZone(pos.x, pos.y, 30, true, fd.name, '')); // sin mensaje, solo nombre
+                    }
+                });
+                currentLevel = BOSS_LEVEL_NUM;
+                gameState = STATE.BOSS_INTRO;
+                bossIntroTimer = 0;
+            }
+            function updateHUD(cfg) {
+                hudCitizens.textContent = player.getStrength();
+                hudLevelTitle.textContent = LEVEL_TITLES[currentLevel] || `Nivel ${currentLevel}`;
+                hudPolice.textContent = policeUnits.filter(p=>p.stunTimer<=0).length;
+                hudShelter.textContent = resistanceFocus ? resistanceFocus.name : '—';
+                hudRequired.textContent = cfg ? cfg.required : bossFlagRequired;
+                hudStrength.textContent = player.getStrength();
+                hudScore.textContent = score;
+            }
+
+            // =============== COLISIONES ===============
+            function playerCollect() {
+                for (let c of citizens) {
+                    if (c.collected || c.scatter>0) continue;
+                    if (Math.hypot(player.x-c.x, player.y-c.y) < player.radius+c.radius) {
+                        player.addCitizen(c);
+                        citizens.splice(citizens.indexOf(c),1);
+                        break;
+                    }
+                }
+            }
+            function policeCapture() {
+                for (let p of policeUnits) {
+                    if (p.stunTimer>0) continue;
+                    for (let c of citizens) {
+                        if (c.collected||c.scatter>0) continue;
+                        if (Math.hypot(p.x-c.x, p.y-c.y) < p.radius+c.radius) { c.scatter=2; }
+                    }
+                    if (player.getStrength()>0 && Math.hypot(p.x-player.x, p.y-player.y) < p.radius+player.radius+10) {
+                        if (player.shield) { p.stun(1.5); }
+                        else if (player.invuln<=0) { player.loseCitizens(Math.min(3, player.getStrength())); }
+                    }
+                }
+            }
+            function safeZoneProtect() {
+                // Gestionar mensaje del foco principal
+                if (resistanceFocus && resistanceFocus.active) {
+                    const insideMain = resistanceFocus.contains(player.x, player.y, player.radius);
+                    if (insideMain && !resistanceFocus.messageShown) {
+                        floatingMessages.push({
+                            text: resistanceFocus.message, life: 9999, color: '#1a3a1a',
+                            x: W/2, y: H/2 - 30, id: 'resistance'
+                        });
+                        resistanceFocus.messageShown = true;
+                    } else if (!insideMain && resistanceFocus.messageShown) {
+                        resistanceFocus.messageShown = false;
+                        floatingMessages = floatingMessages.filter(m => m.id !== 'resistance');
+                    }
+                    if (insideMain) {
+                        player.invuln = Math.max(player.invuln, 0.4);
+                        for (let p of policeUnits) if (resistanceFocus.contains(p.x,p.y,p.radius)) p.stun(0.5);
+                    }
+                }
+                // Zonas seguras adicionales (incluye los focos pequeños del jefe)
+                for (let sz of safeZones) {
+                    if (!sz.active) continue;
+                    if (sz.contains(player.x, player.y, player.radius)) {
+                        player.invuln = Math.max(player.invuln, 0.3);
+                        for (let p of policeUnits) if (sz.contains(p.x,p.y,p.radius)) p.stun(0.5);
+                    }
+                }
+            }
+            function checkFlagSpawn(required) {
+                if (flag || mobilization.active) return;
+                if (player.getStrength() >= required) {
+                    flag = new Flag(Math.random()<0.5?40:W-40, H*0.3+Math.random()*H*0.4);
+                    sfxFlagSpawn();
+                }
+            }
+            function checkFlagCollection() {
+                if (!flag || mobilization.active) return false;
+                if (Math.hypot(player.x-flag.poleX, player.y-(flag.poleY+25)) < 30) {
+                    mobilization.active = true;
+                    mobilization.timer = 2.5;
+                    flag = null;
+                    sfxMobilization();
+                    mobilization.outcomeState = gameState === STATE.BOSS_BATTLE ? STATE.VICTORY : STATE.LEVEL_COMPLETE;
+                    return true;
+                }
+                return false;
+            }
+
+            function spawnTideParticle() {
+                const colors = ['#40c040','#e04040','#888888'];
+                particles.push({
+                    x: -20, y: Math.random()*H,
+                    color: colors[Math.floor(Math.random()*3)], life: 2,
+                    vx: 350+Math.random()*200, vy: (Math.random()-0.5)*40,
+                    radius: 7, isTide: true,
+                    update(dt) { this.life-=dt; this.x+=this.vx*dt; this.y+=this.vy*dt; },
+                    draw(ctx) {
+                        ctx.globalAlpha = this.life/2;
+                        ctx.fillStyle = this.color;
+                        ctx.beginPath(); ctx.arc(this.x,this.y,this.radius,0,Math.PI*2); ctx.fill();
+                        ctx.globalAlpha = 1;
+                    },
+                    alive() { return this.life>0; }
+                });
+            }
+
+            // =============== RENDER ===============
+            function drawBackground() {
+                ctx.fillStyle = '#f5f0e1'; ctx.fillRect(0,0,W,H);
+            }
+            function drawWorld() {
+                drawBackground();
+                if (resistanceFocus && resistanceFocus.active) resistanceFocus.draw(ctx);
+                safeZones.forEach(s=>s.active&&s.draw(ctx));
+                citizens.forEach(c=>!c.collected&&c.draw(ctx));
+                if (player) player.collected.forEach(c=>c.drawCollected(ctx, c.x, c.y));
+                policeUnits.forEach(p=>p.draw(ctx));
+                if (player) player.draw(ctx);
+                if (boss && (gameState===STATE.BOSS_BATTLE||gameState===STATE.BOSS_INTRO)) boss.draw(ctx);
+                if (flag) flag.draw(ctx);
+                particles.forEach(p=>p.draw(ctx));
+                floatingMessages.forEach(m=>{
+                    ctx.fillStyle = m.color;
+                    ctx.font = 'bold 13px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(m.text, m.x, m.y);
+                });
+            }
+
+            // =============== BUCLE ===============
+            let lastTime = performance.now();
+            function loop(now) {
+                resizeCanvas();
+                let dt = Math.min(0.1, (now-lastTime)/1000);
+                lastTime = now;
+                const cfg = currentLevel <= MAX_REGULAR_LEVELS ? getLevelConfig(currentLevel) : null;
+
+                if (gameState === STATE.MENU) {
+                    drawWorld();
+                    ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(0,0,W,H);
+                    ctx.fillStyle='#ffd700'; ctx.font=`bold ${W/18}px sans-serif`; ctx.textAlign='center';
+                    ctx.fillText('UNIDAD CONTRA EL PRESIDENTE',W/2,H*0.22);
+                    ctx.fillStyle='#f44'; ctx.font=`${W/25}px sans-serif`;
+                    ctx.fillText('ANARCO CAPITALISTA',W/2,H*0.30);
+                    ctx.fillStyle='#fff'; ctx.font=`${W/30}px sans-serif`;
+                    ctx.fillText('Sos una persona indignada con las políticas de este gobierno.',W/2,H*0.42);
+                    ctx.fillText('Organizá a todos los sectores para derrotarlo.',W/2,H*0.48);
+                    ctx.fillText('Haz clic para ver el tutorial',W/2,H*0.58);
+                }
+                else if (gameState === STATE.TUTORIAL) {
+                    drawWorld();
+                    ctx.fillStyle='rgba(0,0,0,0.85)'; ctx.fillRect(0,0,W,H);
+                    ctx.fillStyle='#ffd700'; ctx.font=`bold ${W/18}px sans-serif`; ctx.textAlign='center';
+                    ctx.fillText('TUTORIAL', W/2, H*0.12);
+                    ctx.fillStyle='#fff'; ctx.font=`${W/28}px sans-serif`;
+                    const lines = [
+                        '🚔 POLICÍAS (casco azul): Defienden al presidente.',
+                        'Te persiguen y te quitan ciudadanos organizados.',
+                        '',
+                        '🛡️ FOCO DE RESISTENCIA (círculo verde):',
+                        'Lugar permanente de protección y organización.',
+                        'Al entrar estarás a salvo y verás su historia.',
+                        '',
+                        '👥 CIUDADANOS (círculo blanco): Aliados potenciales.',
+                        'Tocalos para organizarlos (se vuelven rojos).',
+                        'Cada nivel reúne a un sector distinto.',
+                        '',
+                        '🚩 BANDERÍN ROJO: Aparece al juntar los necesarios.',
+                        'Al tocarlo, una marea barre a la policía.',
+                        '',
+                        'Haz clic para comenzar',
+                    ];
+                    lines.forEach((line,i)=> ctx.fillText(line, W/2, H*0.25 + i*W/35));
+                }
+                else if (gameState === STATE.PLAYING || gameState === STATE.BOSS_BATTLE) {
+                    player.update(dt);
+                    citizens.forEach(c=>c.update(dt, cfg||getLevelConfig(5)));
+                    policeUnits.forEach(p=>p.update(dt, player, cfg||getLevelConfig(5)));
+                    if (resistanceFocus) resistanceFocus.update(dt);
+                    safeZones.forEach(s=>s.update(dt));
+                    if (flag) flag.update(dt);
+                    levelTimer -= dt;
+
+                    if (mobilization.active) {
+                        mobilization.timer -= dt;
+                        for (let i=0;i<8;i++) spawnTideParticle();
+                        for (let p of policeUnits) {
+                            if (p.stunTimer>0) continue;
+                            for (let pt of particles) {
+                                if (pt.isTide && Math.hypot(pt.x-p.x, pt.y-p.y) < pt.radius+p.radius) {
+                                    p.stun(10); pt.life = 0; break;
+                                }
+                            }
+                        }
+                        if (mobilization.timer <= 0) {
+                            policeUnits.forEach(p=>p.stun(999));
+                            mobilization.active = false;
+                            gameState = mobilization.outcomeState;
+                            if (gameState === STATE.LEVEL_COMPLETE) { score+=300*currentLevel; sfxVictory(); }
+                            else if (gameState === STATE.VICTORY) { score+=1000; sfxVictory(); }
+                        }
+                    }
+
+                    if (!mobilization.active) {
+                        playerCollect();
+                        policeCapture();
+                        safeZoneProtect();
+                        if (gameState === STATE.PLAYING && cfg) checkFlagSpawn(cfg.required);
+                        else if (gameState === STATE.BOSS_BATTLE) checkFlagSpawn(bossFlagRequired);
+                        checkFlagCollection();
+                    }
+
+                    particles = particles.filter(p=>p.alive ? (p.update(dt), true) : false);
+                    floatingMessages = floatingMessages.filter(m=>m.life>0);
+
+                    if (levelTimer <= 0 && !mobilization.active) {
+                        if ((cfg && player.getStrength() >= cfg.required) || gameState===STATE.BOSS_BATTLE) {
+                            if (gameState===STATE.PLAYING) { gameState=STATE.LEVEL_COMPLETE; score+=200*currentLevel; sfxVictory(); }
+                        } else {
+                            lives--;
+                            if (lives<=0) gameState=STATE.GAME_OVER;
+                            else initLevel(currentLevel);
+                        }
+                    }
+                    updateHUD(cfg);
+                    drawWorld();
+                }
+                else if (gameState === STATE.BOSS_INTRO) {
+                    drawWorld();
+                    ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(0,0,W,H);
+                    ctx.fillStyle='#ffd700'; ctx.font=`bold ${W/18}px sans-serif`; ctx.textAlign='center';
+                    ctx.fillText('¡EL PRESIDENTE APARECE!',W/2,H*0.4);
+                    ctx.fillStyle='#fff'; ctx.font=`${W/25}px sans-serif`;
+                    ctx.fillText('Todos los sectores unidos en la lucha final',W/2,H*0.5);
+                    ctx.fillText('Haz clic para enfrentarlo',W/2,H*0.58);
+                    bossIntroTimer += dt;
+                    if (bossIntroTimer>3 || keys[' ']||keys['enter']) {
+                        gameState = STATE.BOSS_BATTLE;
+                        bossIntroTimer = 0;
+                    }
+                }
+                else if (gameState === STATE.LEVEL_COMPLETE) {
+                    drawWorld();
+                    ctx.fillStyle='rgba(245,240,225,0.9)'; ctx.fillRect(0,0,W,H);
+                    ctx.fillStyle='#4a3020'; ctx.font=`bold ${W/16}px sans-serif`; ctx.textAlign='center';
+                    ctx.fillText(`¡${LEVEL_TITLES[currentLevel].replace('Organicemos a los ','').replace('Unamos a los ','').replace('Unamos a las ','').replace('Despertemos a los ','')} ORGANIZADOS!`,W/2,H*0.42);
+                    ctx.fillStyle='#333'; ctx.font=`${W/25}px sans-serif`;
+                    ctx.fillText('Haz clic para el próximo sector',W/2,H*0.55);
+                }
+                else if (gameState === STATE.GAME_OVER) {
+                    drawWorld();
+                    ctx.fillStyle='rgba(0,0,0,0.8)'; ctx.fillRect(0,0,W,H);
+                    ctx.fillStyle='#f44'; ctx.font=`bold ${W/16}px sans-serif`; ctx.textAlign='center';
+                    ctx.fillText('LA ORGANIZACIÓN HA FRACASADO',W/2,H*0.45);
+                    ctx.fillText('Haz clic para volver a intentarlo',W/2,H*0.55);
+                }
+                else if (gameState === STATE.VICTORY) {
+                    drawWorld();
+                    ctx.fillStyle='rgba(245,240,225,0.9)'; ctx.fillRect(0,0,W,H);
+                    ctx.fillStyle='#8b0000'; ctx.font=`bold ${W/14}px sans-serif`; ctx.textAlign='center';
+                    ctx.fillText('¡VICTORIA!',W/2,H*0.4);
+                    ctx.fillStyle='#4a3020'; ctx.font=`${W/22}px sans-serif`;
+                    ctx.fillText('El presidente ha sido derrotado',W/2,H*0.5);
+                    ctx.fillText('gracias a la unidad de todos los sectores.',W/2,H*0.56);
+                }
+
+                requestAnimationFrame(loop);
+            }
+
+            function handleClick() {
+                initAudio();
+                if (gameState === STATE.MENU) gameState = STATE.TUTORIAL;
+                else if (gameState === STATE.TUTORIAL) { initLevel(1); score=0; lives=3; }
+                else if (gameState === STATE.LEVEL_COMPLETE) {
+                    if (currentLevel < MAX_REGULAR_LEVELS) initLevel(currentLevel+1);
+                    else initBossLevel();
+                }
+                else if (gameState === STATE.BOSS_INTRO) { gameState = STATE.BOSS_BATTLE; bossIntroTimer = 0; }
+                else if (gameState === STATE.GAME_OVER || gameState === STATE.VICTORY) { gameState = STATE.MENU; score=0; lives=3; currentLevel=1; }
+            }
+
+            canvas.addEventListener('click', handleClick);
+            window.addEventListener('keydown', e => {
+                initAudio();
+                keys[e.key.toLowerCase()] = true;
+                if (e.key===' '||e.key==='Enter') handleClick();
+                e.preventDefault();
+            });
+            window.addEventListener('keyup', e => { keys[e.key.toLowerCase()]=false; e.preventDefault(); });
+            resizeCanvas();
+            gameState = STATE.MENU;
+            requestAnimationFrame(loop);
+        })();
+    </script>
+</body>
+</html>
